@@ -414,36 +414,37 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       auto src_type = op->args[1].as<CallNode>()->args[0].as<CallNode>()->dtype;
       auto dst_type = op->args[2].as<CallNode>()->args[0].as<CallNode>()->dtype;
 
-      if (op_name.find("copy_l0c_to_gm") != std::string::npos) {
+      static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
+        {"copy_l0c_to_gm", 2},
+        {"copy_gm_to_l1", 1},
+        {"copy_l1_to_l0a", 0},
+        {"copy_l1_to_l0b", 0},
+        {"copy_gm_to_ub", 1},
+        {"copy_ub_to_gm", 1},
+        {"copy_ub_to_ub", 0}
+      };
+
+      bool found = false;
+      int extra_args = 0;
+
+      for (const auto& pair : kCopyOpExtraArgs) {
+        if (op_name.find(pair.first) != std::string::npos) {
+          found = true;
+          extra_args = pair.second;
+          break;
+        }
+      }
+
+      if (found) {
         this->PrintIndent();
         this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "], "
-                     << PrintExpr(op->args[3]) << ");\n";
-      } else if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_l1_to_l0a") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_l1_to_l0b") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_gm_to_ub") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "], "
-                     << PrintExpr(op->args[3]) << ");\n";
-      } else if (op_name.find("copy_ub_to_gm") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
-      } else if (op_name.find("copy_ub_to_ub") != std::string::npos) {
-        this->PrintIndent();
-        this->stream << op_name << "(" << dst_var_id << "[" << dst_offset
-                     << "], " << src_var_id << "[" << src_offset << "]);\n";
+                    << "], " << src_var_id << "[" << src_offset << "]";
+
+        for (int i = 0; i < extra_args; ++i) {
+          this->stream << ", " << PrintExpr(op->args[3 + i]);
+        }
+
+        this->stream << ");\n";
       } else {
         this->PrintIndent();
         this->stream << "not implemented yet\n";
@@ -602,7 +603,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                    << ", " << PrintExpr(op->args[4]) << ");\n";
     } else if (op_name == "AscendC::Add" || op_name == "AscendC::Max" ||
                op_name == "AscendC::Sub" || op_name == "AscendC::Mul" ||
-               op_name == "AscendC::Exp") {
+               op_name == "AscendC::Exp" || op_name == "AscendC::Ln" ||
+               op_name == "AscendC::Abs" || op_name == "AscendC::Reciprocal" ||
+               op_name == "AscendC::Sqrt" || op_name == "AscendC::Rsqrt" ||
+               op_name == "AscendC::Not" || op_name == "AscendC::Relu") {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
