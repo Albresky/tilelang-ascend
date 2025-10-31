@@ -48,12 +48,24 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       return "half";
     } else if (dtype.is_float() && dtype.bits() == 32) {
       return "float";
-    } else if (dtype.is_int()) {
+    } else if (dtype.is_int() && dtype.bits() == 8) {
+      return "int8_t";
+    } else if (dtype.is_int() && dtype.bits() == 16) {
+      return "int16_t";
+    } else if (dtype.is_int() && dtype.bits() == 32) {
       return "int";
+    } else if (dtype.is_int() && dtype.bits() == 64) {
+      return "int64_t";
     } else if (dtype.is_uint() && dtype.bits() == 8) {
       return "uint8_t";
+    } else if (dtype.is_uint() && dtype.bits() == 16) {
+      return "uint16_t";
     } else if (dtype.is_uint() && dtype.bits() == 32) {
       return "uint32_t";
+    } else if (dtype.is_uint() && dtype.bits() == 64) {
+      return "uint64_t";
+    } else if (dtype.is_bfloat16()) {
+      return "bfloat16_t";
     }
     LOG(FATAL) << "Unsupported data type: " << dtype;
     return "";
@@ -71,6 +83,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
     }
     return strideN;
+  };
+
+  auto compute_blocklen = [](const Buffer &buf, const Array<PrimExpr> &extents) -> PrimExpr {
+      PrimExpr res = buf->shape[buf->shape.size() - 2];
+      auto ext_size = extents.size();
+      if (ext_size > 1 && extents[ext_size - 2]->IsInstance<IntImmNode>() &&
+      res->IsInstance<IntImmNode>()) {
+        auto extent = static_cast<int>(extents[ext_size - 2].as<IntImmNode>()->value);
+        auto shape = static_cast<int>(res.as<IntImmNode>()->value);
+        res = shape < extent ? res : extents[ext_size - 2];
+      }
+
+    return res;
   };
 
   auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
@@ -119,7 +144,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(src) << ", ";
       ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
-        ss << ", " << dst->shape[dst->shape.size() - 2];
+        ss << ", " << compute_blocklen(dst, src_extents);
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -130,7 +155,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(dst) << ", ";
       ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << src->shape[src->shape.size() - 2];
+        ss << ", " << compute_blocklen(src, dst_extents);
       }
       ss << ">";
     } else {

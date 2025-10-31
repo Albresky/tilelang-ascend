@@ -6,7 +6,8 @@ import math
 
 
 def _dtype(buf):
-    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t"}
+    type_map = {"float16": "half", "float32": "float", "int32": "int", "uint32": "uint32_t", "bfloat16": "bfloat16_t", "uint16": "uint16_t", "uint8": "uint8_t",
+                "int8": "int8_t", "int16": "int16_t", "int64": "int64_t", "uint64": "uint64_t"}
     if isinstance(buf, BufferRegion):
         buf = buf.buffer
     return type_map[buf.dtype]
@@ -249,11 +250,55 @@ def gather_mask(dst: Buffer, src: Buffer, num):
     return T.call_extern("handle", f"tl::ascend::GatherMask<{_dtype(dst)}>", dst.access_ptr("w"),
                          src.access_ptr("r"), num)
 
-def select(dst: Buffer, selMask: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
-    dst_ptr = dst.access_ptr("w")
+
+def gatherb(dst: Buffer, src0: Buffer, offset: Buffer, repeat_time, dst_blk_stride, dst_rep_stride):
+    return T.call_extern("handle", f"tl::ascend::Gatherb<{_dtype(dst)}>", dst.access_ptr("w"),
+                         src0.access_ptr("r"), offset.access_ptr("r"), repeat_time, dst_blk_stride, dst_rep_stride)
+
+
+def select(dst: Union[Buffer, BufferRegion], selMask: Buffer, src0: Union[Buffer, BufferRegion], src1: Union[Buffer, BufferLoad, PrimExpr], selMode: str):
+    def retrieve_shape(object: Union[Buffer, BufferRegion]) -> List[int]:
+        if isinstance(object, Buffer):
+            return object.shape
+        elif isinstance(object, BufferRegion):
+            region = object.region
+            shape = []
+            for r in region:
+                shape.append(r.extent)
+            return shape
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    dst_shape = retrieve_shape(dst)
+    src0_shape = retrieve_shape(src0)
+
+    assert tuple(dst_shape) == tuple(src0_shape), "dst and src0 must have the same shape"
+
+    def retrieve_ptr(object: Union[Buffer, BufferRegion], access_type: str = "r") -> PrimExpr:
+        if isinstance(object, Buffer):
+            return object.access_ptr(access_type)
+        elif isinstance(object, BufferRegion):
+            buffer, region = object.buffer, object.region
+            indices = []
+            for r in region:
+                indices.append(r.min)
+            strides = []
+            stride = 1
+            for s in reversed(buffer.shape):
+                strides.insert(0, stride)
+                stride *= s
+            offset = 0
+            for i in range(len(indices)):
+                offset += indices[i] * strides[i]
+            return buffer.access_ptr(access_mask=access_type, offset=offset)
+        else:
+            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+    dst_ptr = retrieve_ptr(dst, "r")
+    src0_ptr = retrieve_ptr(src0, "r")
+    
     sel_mask_ptr = selMask.access_ptr("r")
-    src0_ptr = src0.access_ptr("r")
-    src0_extent = src0.shape
+    src0_extent = src0_shape
 
     assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_SCALAR_MODE", "VSEL_TENSOR_TENSOR_MODE"]
 
@@ -362,6 +407,12 @@ def max(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
 def min(dst: Buffer, src0: Buffer, src1: Union[Buffer]):
     return binary_op(dst, src0, src1, "Min")
 
+def and_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+    return binary_op(dst, src0, src1, "And")
+
+def or_tl(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]):
+    return binary_op(dst, src0, src1, "Or")
+
 
 def unary_op(dst: Buffer, src0: Buffer, op: str):
     size_0 = math.prod(src0.shape)
@@ -400,6 +451,9 @@ def rsqrt(dst: Buffer, src0: Buffer):
 def relu(dst: Buffer, src0: Buffer):
     return unary_op(dst, src0, "Relu")
 
+def not_tl(dst: Buffer, src0: Buffer):
+    return unary_op(dst, src0, "Not")
+
 
 def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
     size_0 = math.prod(src0.shape)
@@ -411,13 +465,52 @@ def scalar_op(dst: Buffer, src0: Buffer, scalar_value: PrimExpr, op: str):
                          scalar_value, size_0)
 
 
-
 def leaky_relu(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "LeakyRelu")
 
 
 def axpy(dst: Buffer, src0: Buffer, scalar_value: PrimExpr):
     return scalar_op(dst, src0, scalar_value, "Axpy")
+
+
+def shiftleft(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+    size_0 = math.prod(src0.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::ShiftLeft", dst.access_ptr("w"),
+                         src0.access_ptr("r"), scalarValue, size_0)
+
+
+def shiftright(dst: Buffer, src0: Buffer, scalarValue: PrimExpr):
+    size_0 = math.prod(src0.shape)
+    size_2 = math.prod(dst.shape)
+
+    assert size_0 == size_2, "size must be same"
+
+    return T.call_extern("handle", f"AscendC::ShiftRight", dst.access_ptr("w"),
+                         src0.access_ptr("r"), scalarValue, size_0)
+def sort32(dst: Buffer, src0: Buffer, src1: Buffer):
+    repeatTimes = math.prod(src0.shape) // 32
+    return T.call_extern("handle", f"AscendC::Sort32", dst.access_ptr("w"),
+                         src0.access_ptr("r"), src1.access_ptr("r"), repeatTimes)
+
+
+def createvecindex(dst: Buffer, firstValue: PrimExpr):
+    calCount = math.prod(dst.shape)
+    return T.call_extern("handle", f"AscendC::CreateVecIndex", dst.access_ptr("w"),
+                         firstValue, calCount)
+
+
+def transpose(dst: Buffer, src: Buffer):
+    return T.call_extern("handle", "AscendC::Transpose", dst.access_ptr("w"), src.access_ptr("r"))
+
+
+def gather(dst: Buffer, src: Buffer, src_offset: Buffer, src_base_addr: PrimExpr):
+    count = math.prod(src.shape)
+    return T.call_extern("handle", "AscendC::Gather", dst.access_ptr("w"), src.access_ptr("r"),
+                          src_offset.access_ptr("r"), src_base_addr, count)
 
 
 def reduce(out: Buffer, buffer: Buffer, tmp: Buffer, reduce_type: str, dim: int):
@@ -491,3 +584,5 @@ def compare(dst: Buffer, src0: Buffer, src1: Union[Buffer, BufferLoad, PrimExpr]
     else:
         return T.call_extern("handle", f"AscendC::Compare", dst_ptr, src0_ptr, src1.access_ptr("r"), cmp_mode, dst_size)
 
+def sync_all():
+    return T.call_extern("handle", f"AscendC::SyncAll<false>")

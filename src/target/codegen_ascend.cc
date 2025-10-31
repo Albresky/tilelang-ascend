@@ -28,12 +28,24 @@ std::string getType(const DataType &dtype) {
     return "half";
   } else if (dtype.is_float()) {
     return "float";
-  } else if (dtype.is_int()) {
+  } else if (dtype.is_int() && dtype.bits() == 8) {
+    return "int8_t";
+  } else if (dtype.is_int() && dtype.bits() == 16) {
+    return "int16_t";
+  } else if (dtype.is_int() && dtype.bits() == 32) {
     return "int";
+  } else if (dtype.is_int() && dtype.bits() == 64) {
+    return "int64_t";
   } else if (dtype.is_uint() && dtype.bits() == 8) {
     return "uint8_t";
+  } else if (dtype.is_uint() && dtype.bits() == 16) {
+    return "uint16_t";
   } else if (dtype.is_uint() && dtype.bits() == 32) {
     return "uint32_t";
+  } else if (dtype.is_uint() && dtype.bits() == 64) {
+    return "uint64_t";
+  } else if (dtype.is_bfloat16()) {
+    return "bfloat16_t";
   }
   LOG(FATAL) << "Unsupported data type: " << dtype;
   return "";
@@ -490,6 +502,9 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     } else if (op_name.find("PipeBarrier") != std::string::npos) {
       this->PrintIndent();
       this->stream << op_name << "();\n";
+    } else if (op_name.find("SyncAll") != std::string::npos) {
+      this->PrintIndent();
+      this->stream << op_name << "();\n";
     } else if (op_name.find("reduce") != std::string::npos) {
       // this->PrintIndent();
       // this->stream << "{\n";
@@ -513,6 +528,22 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       // this->EndScope(func_scope);
       // this->PrintIndent();
       // this->stream << "}\n";
+    } else if (op_name == "AscendC::Sort32") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size() - 1; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
+                   << ");\n";
     } else if (op_name.find("MergeSort") != std::string::npos) {
       // vtm::Dump(op);
       std::vector<std::string> var_names;
@@ -588,6 +619,24 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
+    } else if (op_name.find("Gatherb") != std::string::npos) {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 4; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ", " << PrintExpr(op->args[4])
+                   << ", " << PrintExpr(op->args[5])
+                   << ", " << PrintExpr(op->args[6])
+                   << ");\n";
     } else if (op_name.find("InitSortBuf") != std::string::npos) {
       tvm::Dump(op);
       this->PrintIndent();
@@ -609,13 +658,39 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       this->stream << op_name << "(" << var_name << ", "
                    << var_name_1 << "," << PrintExpr(op->args[3])
                    << ", " << PrintExpr(op->args[4]) << ");\n";
+    } else if (op_name == "AscendC::Transpose") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < op->args.size(); i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      this->stream << ");\n";
+    } else if (op_name == "AscendC::Gather") {
+      this->PrintIndent();
+      auto var_name_1 = print_buffer_offset(op->args[1].as<CallNode>());
+      auto var_name_2 = print_buffer_offset(op->args[2].as<CallNode>());
+      auto var_name_3 = print_buffer_offset(op->args[3].as<CallNode>());
+
+      this->stream << op_name << "(" << var_name_1 << ", "
+                   << var_name_2 << ", " << var_name_3
+                   << ", " << PrintExpr(op->args[4])
+                   << ", " << PrintExpr(op->args[5]) << ");\n";
     } else if (op_name == "AscendC::Add" || op_name == "AscendC::Max" ||
                op_name == "AscendC::Min" || op_name == "AscendC::Sub" ||
                op_name == "AscendC::Mul" || op_name == "AscendC::Exp" ||
                op_name == "AscendC::Ln" || op_name == "AscendC::Abs" ||
                op_name == "AscendC::Reciprocal" || op_name == "AscendC::Sqrt" ||
                op_name == "AscendC::Rsqrt" || op_name == "AscendC::Not" ||
-               op_name == "AscendC::Relu") {
+               op_name == "AscendC::Relu" || op_name == "AscendC::Div" ||
+               op_name == "AscendC::And" || op_name == "AscendC::Or" ) {
       std::vector<std::string> var_names;
       for (int i = 1; i < op->args.size() - 1; i++) {
         auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
@@ -631,6 +706,42 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
       }
       this->stream << ", " << PrintExpr(op->args[op->args.size() - 1])
                    << ");\n";
+    } else if (op_name == "AscendC::ShiftLeft" || op_name == "AscendC::ShiftRight") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 3; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = 3; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ");\n";
+    } else if (op_name == "AscendC::CreateVecIndex") {
+      std::vector<std::string> var_names;
+      for (int i = 1; i < 2; i++) {
+        auto var_name = print_buffer_offset(op->args[i].as<CallNode>());
+        var_names.push_back(var_name);
+      }
+      this->PrintIndent();
+      this->stream << op_name << "(";
+      for (int i = 0; i < var_names.size(); i++) {
+        this->stream << var_names[i];
+        if (i != var_names.size() - 1) {
+          this->stream << ", ";
+        }
+      }
+      for (int i = 2; i < op->args.size(); i++) {
+        this->stream << ", " << PrintExpr(op->args[i]);
+      }
+      this->stream << ");\n";
     } else if (op_name == "AscendC::Muls" || op_name == "AscendC::Adds") {
       std::vector<std::string> var_names;
       for (int i = 1; i < 3; i++) {
@@ -1190,11 +1301,14 @@ void CodeGenTileLangAscend::ProcessTilingInput(std::ostream &os, std::string fun
   }
   os << ") {\n";
   int func_scope = this->BeginScope();
-  for (auto &pair : tiling_map_) {
-    this->PrintIndent();
-    os << pair.first << " = ";
-    PrintExpr(arith::Analyzer().Simplify(pair.second), os);
-    os << ";\n";
+  for (auto &key : var_sequence_) {
+    if (tiling_map_.find(key) != tiling_map_.end()) {
+      auto value = tiling_map_[key];
+      this->PrintIndent();
+      os << key << " = ";
+      PrintExpr(arith::Analyzer().Simplify(value), os);
+      os << ";\n";
+    }
   }
   this->EndScope(func_scope);
   os << "}\n\n";
@@ -1264,6 +1378,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value();
 
   tiling_map_ = f->GetAttr<Map<Var, PrimExpr>>("tiling_map").value();
+  var_sequence_ = f->GetAttr<Array<Var>>("var_sequence").value();
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
   bool no_alias = f->HasNonzeroAttr(tir::attr::kNoAlias);
@@ -1332,6 +1447,10 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
       stream << ", ";
   }
   for (const auto &pair : tiling_map_) {
+    auto tiling_varnode = pair.first.get();
+    if (var_idmap_.count(tiling_varnode) == 0) {
+      (void)AllocVarID(tiling_varnode);
+    }
     stream << "int64_t " << GetVarID(pair.first.get());
     if (index != tiling_map_.size() - 1) {
         stream << ", ";
